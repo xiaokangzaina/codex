@@ -5,6 +5,7 @@ use crate::OPENAI_CURATED_MARKETPLACE_NAME;
 use crate::PluginLoadOutcome;
 use crate::ToolSuggestDiscoverablePlugin;
 use crate::ToolSuggestPluginDiscoveryInput;
+use crate::installed_marketplaces::managed_bundled_marketplace_root;
 use crate::installed_marketplaces::marketplace_install_root;
 use crate::loader::load_plugin_skills;
 use crate::loader::load_plugins_from_layer_stack;
@@ -4340,6 +4341,78 @@ source = "/tmp/debug"
     );
     assert_eq!(marketplace.plugins.len(), 1);
     assert_eq!(marketplace.plugins[0].id, "sample@debug");
+    assert_eq!(
+        marketplace.plugins[0].source,
+        MarketplacePluginSource::Local {
+            path: AbsolutePathBuf::try_from(plugin_root).unwrap(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn list_marketplaces_falls_back_to_managed_bundled_root_when_configured_source_is_stale() {
+    let tmp = tempfile::tempdir().unwrap();
+    let stale_source_root = tmp.path().join("removed-windowsapps-package");
+    let bundled_root =
+        managed_bundled_marketplace_root(tmp.path(), crate::OPENAI_BUNDLED_MARKETPLACE_NAME)
+            .unwrap();
+    let plugin_root = bundled_root.join("plugins/browser");
+
+    write_file(
+        &tmp.path().join(CONFIG_TOML_FILE),
+        &format!(
+            r#"[features]
+plugins = true
+
+[marketplaces.{bundled_marketplace_name}]
+last_updated = "2026-04-10T12:34:56Z"
+source_type = "local"
+source = {stale_source_root:?}
+"#,
+            bundled_marketplace_name = crate::OPENAI_BUNDLED_MARKETPLACE_NAME,
+        ),
+    );
+    fs::create_dir_all(bundled_root.join(".agents/plugins")).unwrap();
+    fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
+    fs::write(
+        bundled_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "openai-bundled",
+  "plugins": [
+    {
+      "name": "browser",
+      "source": {
+        "source": "local",
+        "path": "./plugins/browser"
+      }
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    fs::write(
+        plugin_root.join(".codex-plugin/plugin.json"),
+        r#"{"name":"browser"}"#,
+    )
+    .unwrap();
+
+    let config = load_config(tmp.path(), tmp.path()).await;
+    let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
+        .list_marketplaces_for_config(&config, &[], /*include_openai_curated*/ true)
+        .unwrap()
+        .marketplaces;
+
+    let marketplace = marketplaces
+        .into_iter()
+        .find(|marketplace| marketplace.name == crate::OPENAI_BUNDLED_MARKETPLACE_NAME)
+        .expect("managed bundled marketplace should be listed");
+
+    assert_eq!(
+        marketplace.path,
+        AbsolutePathBuf::try_from(bundled_root.join(".agents/plugins/marketplace.json")).unwrap()
+    );
+    assert_eq!(marketplace.plugins.len(), 1);
+    assert_eq!(marketplace.plugins[0].id, "browser@openai-bundled");
     assert_eq!(
         marketplace.plugins[0].source,
         MarketplacePluginSource::Local {

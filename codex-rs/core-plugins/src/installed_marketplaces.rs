@@ -8,11 +8,27 @@ use tracing::warn;
 
 use crate::marketplace::find_marketplace_manifest_path;
 use crate::marketplace_policy::project_effective_user_config;
+use crate::OPENAI_BUNDLED_ALPHA_MARKETPLACE_NAME;
+use crate::OPENAI_BUNDLED_MARKETPLACE_NAME;
 
 pub const INSTALLED_MARKETPLACES_DIR: &str = ".tmp/marketplaces";
+const BUNDLED_MARKETPLACES_DIR: &str = ".tmp/bundled-marketplaces";
 
 pub fn marketplace_install_root(codex_home: &Path) -> PathBuf {
     codex_home.join(INSTALLED_MARKETPLACES_DIR)
+}
+
+pub(crate) fn is_managed_bundled_marketplace_name(marketplace_name: &str) -> bool {
+    marketplace_name == OPENAI_BUNDLED_MARKETPLACE_NAME
+        || marketplace_name == OPENAI_BUNDLED_ALPHA_MARKETPLACE_NAME
+}
+
+pub(crate) fn managed_bundled_marketplace_root(
+    codex_home: &Path,
+    marketplace_name: &str,
+) -> Option<PathBuf> {
+    is_managed_bundled_marketplace_name(marketplace_name)
+        .then(|| codex_home.join(BUNDLED_MARKETPLACES_DIR).join(marketplace_name))
 }
 
 pub fn installed_marketplace_roots_from_layer_stack(
@@ -53,7 +69,11 @@ pub fn installed_marketplace_roots_from_layer_stack(
                 marketplace,
                 &default_install_root,
             )?;
-            find_marketplace_manifest_path(&path).map(|_| path)
+            if find_marketplace_manifest_path(&path).is_some() {
+                return Some(path);
+            }
+            let bundled_path = managed_bundled_marketplace_root(codex_home, marketplace_name)?;
+            find_marketplace_manifest_path(&bundled_path).map(|_| bundled_path)
         })
         .filter_map(|path| AbsolutePathBuf::try_from(path).ok())
         .collect::<Vec<_>>();
